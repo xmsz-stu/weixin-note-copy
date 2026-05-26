@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import type { ClipboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -37,6 +38,7 @@ function App() {
   );
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<ConvertProgress | null>(null);
+  const sourceInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const output = result?.html ?? "";
   const canConvert = source.trim().length > 0 && !isConverting;
@@ -83,17 +85,91 @@ function App() {
   async function writeRichHtmlToClipboard(html: string) {
     const plainText = htmlToPlainText(html);
 
-    if (typeof ClipboardItem !== "undefined") {
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([plainText], { type: "text/plain" }),
-        }),
-      ]);
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
+          }),
+        ]);
+        return;
+      }
+    } catch {
+      copyRichHtmlWithSelection(html, plainText);
       return;
     }
 
-    await navigator.clipboard.writeText(html);
+    copyRichHtmlWithSelection(html, plainText);
+  }
+
+  function copyRichHtmlWithSelection(html: string, plainText: string) {
+    const previousFocus = document.activeElement;
+    const container = document.createElement("div");
+
+    container.contentEditable = "true";
+    container.innerHTML = html;
+    container.style.position = "fixed";
+    container.style.left = "-9999px";
+    container.style.top = "0";
+    container.style.width = "1px";
+    container.style.height = "1px";
+    container.style.overflow = "hidden";
+    container.addEventListener("copy", (event) => {
+      event.clipboardData?.setData("text/html", html);
+      event.clipboardData?.setData("text/plain", plainText);
+      event.preventDefault();
+    });
+
+    document.body.appendChild(container);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const copied = document.execCommand("copy");
+    selection?.removeAllRanges();
+    container.remove();
+
+    if (previousFocus instanceof HTMLElement) {
+      previousFocus.focus();
+    }
+
+    if (!copied) {
+      throw new Error("复制失败");
+    }
+  }
+
+  function handleSourcePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const html = event.clipboardData.getData("text/html");
+
+    if (!html) return;
+
+    event.preventDefault();
+
+    const target = event.currentTarget;
+    const selectionStart = target.selectionStart;
+    const selectionEnd = target.selectionEnd;
+    const nextSource =
+      source.slice(0, selectionStart) + html + source.slice(selectionEnd);
+    const nextCursorPosition = selectionStart + html.length;
+
+    setSource(nextSource);
+    setResult(null);
+    setError("");
+    setProgress(null);
+    setCopyState("idle");
+
+    window.requestAnimationFrame(() => {
+      const input = sourceInputRef.current;
+
+      if (!input) return;
+
+      input.selectionStart = nextCursorPosition;
+      input.selectionEnd = nextCursorPosition;
+    });
   }
 
   async function inlineLocalImages(
@@ -226,8 +302,10 @@ function App() {
         <label className="pane">
           <span>输入</span>
           <textarea
+            ref={sourceInputRef}
             value={source}
             onChange={(event) => setSource(event.currentTarget.value)}
+            onPaste={handleSourcePaste}
             placeholder="把微信复制出来的 HTML 粘贴到这里"
             spellCheck={false}
           />
