@@ -2,13 +2,17 @@ use base64::{engine::general_purpose, Engine as _};
 use std::{fs, path::PathBuf};
 
 #[tauri::command]
-fn local_image_to_data_url(src: String) -> Result<String, String> {
-  let path = src_to_path(&src)?;
-  let bytes = fs::read(&path).map_err(|error| format!("读取失败 ({error})"))?;
-  let mime_type = mime_type_for_path(&path);
-  let encoded = general_purpose::STANDARD.encode(bytes);
+async fn local_image_to_data_url(src: String) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let path = src_to_path(&src)?;
+    let bytes = fs::read(&path).map_err(|error| format!("读取失败 ({error})"))?;
+    let mime_type = mime_type_for_path(&path);
+    let encoded = general_purpose::STANDARD.encode(bytes);
 
-  Ok(format!("data:{mime_type};base64,{encoded}"))
+    Ok(format!("data:{mime_type};base64,{encoded}"))
+  })
+  .await
+  .map_err(|error| format!("转换任务失败 ({error})"))?
 }
 
 fn src_to_path(src: &str) -> Result<PathBuf, String> {
