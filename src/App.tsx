@@ -14,6 +14,11 @@ type ConvertResult = {
   errors: ImageError[];
 };
 
+type ConvertProgress = {
+  total: number;
+  processed: number;
+};
+
 const imageSrcPattern = /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(.*?)\2/gi;
 
 const sampleHtml = `<html>
@@ -31,28 +36,34 @@ function App() {
     "idle",
   );
   const [error, setError] = useState("");
+  const [progress, setProgress] = useState<ConvertProgress | null>(null);
 
   const output = result?.html ?? "";
   const canConvert = source.trim().length > 0 && !isConverting;
   const summary = useMemo(() => {
+    if (progress) return `转换中 ${progress.processed}/${progress.total}`;
     if (!result) return "等待转换";
 
     return `已转换 ${result.converted_count} 张图片，跳过 ${result.skipped_count} 张，失败 ${result.errors.length} 张`;
-  }, [result]);
+  }, [progress, result]);
 
   async function convertImages() {
     if (!source.trim()) return;
 
     setIsConverting(true);
     setError("");
+    setResult(null);
+    setProgress(null);
     setCopyState("idle");
 
     try {
-      setResult(await inlineLocalImages(source));
+      await yieldToBrowser();
+      setResult(await inlineLocalImages(source, setProgress));
     } catch (caught) {
       setResult(null);
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
+      setProgress(null);
       setIsConverting(false);
     }
   }
@@ -85,18 +96,28 @@ function App() {
     await navigator.clipboard.writeText(html);
   }
 
-  async function inlineLocalImages(html: string): Promise<ConvertResult> {
+  async function inlineLocalImages(
+    html: string,
+    onProgress: (progress: ConvertProgress) => void,
+  ): Promise<ConvertResult> {
     let convertedCount = 0;
     let skippedCount = 0;
     const errors: ImageError[] = [];
     const replacements = new Map<string, string>();
     const matches = Array.from(html.matchAll(imageSrcPattern));
+    let processedCount = 0;
+
+    onProgress({ total: matches.length, processed: processedCount });
+    await yieldToBrowser();
 
     for (const match of matches) {
       const src = decodeHtmlAttr(match[3] ?? "");
 
       if (shouldSkipSrc(src)) {
         skippedCount += 1;
+        processedCount += 1;
+        onProgress({ total: matches.length, processed: processedCount });
+        await yieldToBrowser();
         continue;
       }
 
@@ -110,6 +131,10 @@ function App() {
           message: caught instanceof Error ? caught.message : String(caught),
         });
       }
+
+      processedCount += 1;
+      onProgress({ total: matches.length, processed: processedCount });
+      await yieldToBrowser();
     }
 
     const convertedHtml = html.replace(
@@ -122,6 +147,8 @@ function App() {
         return `${prefix}${quote}${escapeHtmlAttr(replacement)}${quote}`;
       },
     );
+
+    await yieldToBrowser();
 
     return {
       html: convertedHtml,
@@ -164,10 +191,17 @@ function App() {
     return container.innerText;
   }
 
+  function yieldToBrowser() {
+    return new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+  }
+
   function clearAll() {
     setSource("");
     setResult(null);
     setError("");
+    setProgress(null);
     setCopyState("idle");
   }
 
